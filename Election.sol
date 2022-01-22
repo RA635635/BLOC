@@ -1,4 +1,6 @@
-ntract Election {
+pragma solidity ^0.8.0;
+
+contract Election {
     
     struct Candidate {
         string name;
@@ -44,7 +46,7 @@ ntract Election {
     * @notice this function registers a new candidate.
      */
     function payFee() public payable {
-        require(msg.value == 100 wei, "Pay 100 wei to register");
+        require(msg.value == 10 wei, "Pay 10 wei to register");
         candidates[msg.sender].registered = true;        
     }
     
