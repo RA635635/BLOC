@@ -1,163 +1,136 @@
-pragma solidity ^0.8.0;
+// SPDX-License-Identifier: GPL-3.0
 
-contract Election {
-    
-    struct Candidate {
-        string name;
-        bool registered;
-        uint voteCount;
-    }
+pragma solidity >=0.7.0 <0.9.0;
 
+contract Ballot {
+   
     struct Voter {
-        bool voted;
-        bool registered;
-        address vote;
+        uint weight; // weight is accumulated by delegation
+        bool voted;  // if true, that person already voted
+        address delegate; // person delegated to
+        uint vote;   // index of the voted
     }
 
-    address[] public candidateAddresses;
-    address public owner;
-    string public electionName;
+    struct Proposal {
+        string name;   // short name (up to 32 bytes)
+        uint voteCount; // number of accumulated votes
+    }
+
+    address public chairperson;
 
     mapping(address => Voter) public voters;
-    mapping(address => Candidate) public candidates;
-    uint public totalVotes;
-    
-    enum State { Created, Voting, Ended }
-    State public state;
 
-    modifier onlyOwner() {
-        require(msg.sender == owner, "You are not the owner");
-        _;
-    }
-    
-    modifier inState(State _state) {
-        require(state == _state, "Wrong state");
-        _;
-    }
+    Proposal[] public proposals;
 
-    constructor(string memory _name) {
-        owner = msg.sender;
-        electionName = _name; 
-        state = State.Created;
-    }
-    
-    /**
-    * @dev this function registers a candidate, msg.sender will be candidate and msg.value should be 1 eth.
-    * @notice this function registers a new candidate.
+    bool public isOpen;
+
+    /* Create a new ballot to choose one of 'proposalNames'.
+       proposalNames names of proposals
      */
-    function payFee() public payable {
-        require(msg.value == 10 wei, "Pay 10 wei to register");
-        candidates[msg.sender].registered = true;        
+    constructor(string[] memory proposalNames) {
+        chairperson = msg.sender;
+        voters[chairperson].weight = 1;
+        isOpen = true;
+        for (uint i = 0; i < proposalNames.length; i++) {
+            // 'Proposal({...})' creates a temporary
+            // Proposal object and 'proposals.push(...)'
+            // appends it to the end of 'proposals'.
+            proposals.push(Proposal({
+                name: proposalNames[i],
+                voteCount: 0
+            }));
+        }
     }
     
-    /**
-    * @dev this function registers a voter, _voterAddress will be voter's address and voters[registered] is the flag.
-    * @notice this function registers a new voter.
+    /* Give 'voter' the right to vote on this ballot. May only be called by 'chairperson'.
+      voter address of voter
      */
-    function registerVoter(address _voterAddress) onlyOwner inState(State.Created) public {
-        require(!voters[_voterAddress].registered, "Voter is already registered");
-        require(_voterAddress != owner, "Owner cannot be registered");
-        voters[_voterAddress].registered = true;
+    function giveRightToVote(address voter) public {
+        require(isOpen);
+        require(
+            msg.sender == chairperson,
+            "Only chairperson can give right to vote."
+        );
+        require(
+            !voters[voter].voted,
+            "The voter already voted."
+        );
+        require(voters[voter].weight == 0);
+        voters[voter].weight = 1;
+    }
+
+    /*
+     Delegate your vote to the voter.
+     to address to which vote is delegated
+     */
+    function delegate(address to) public {
+        Voter storage sender = voters[msg.sender];
+        require(isOpen);
+        require(!sender.voted, "You already voted.");
+        require(to != msg.sender, "Self-delegation is disallowed.");
+
+        while (voters[to].delegate != address(0)) {
+            to = voters[to].delegate;
+
+            // We found a loop in the delegation, not allowed.
+            require(to != msg.sender, "Found loop in delegation.");
+        }
+        sender.voted = true;
+        sender.delegate = to;
+        Voter storage delegate_ = voters[to];
+        if (delegate_.voted) {
+            // If the delegate already voted,
+            // directly add to the number of votes
+            proposals[delegate_.vote].voteCount += sender.weight;
+        } else {
+            // If the delegate did not vote yet,
+            // add to her weight.
+            delegate_.weight += sender.weight;
+        }
     }
 
     /**
-    * @dev this function adds a candidate, _canAddress will be the candidate address and _name will be the candidate's name.
-    * @notice this function adds a new candidate.
-    * @param _canAddress candidate address.
-    * @param _name name of candidate.
+     * Give your vote (including votes delegated to you) to proposal 'proposals[proposal].name'.
+     * proposal index of proposal in the proposals array
      */
-    function addCandidate(address _canAddress, string memory _name) inState(State.Created) onlyOwner public {
-        require(candidates[_canAddress].registered, "Candidate is not registered");
-        candidates[_canAddress].name = _name;
-        candidates[_canAddress].voteCount = 0;
-        candidateAddresses.push(_canAddress);
+    function vote(uint proposal) public {
+        require(isOpen);
+        Voter storage sender = voters[msg.sender];
+        require(sender.weight != 0, "Has no right to vote");
+        require(!sender.voted, "Already voted.");
+        sender.voted = true;
+        sender.vote = proposal;
+
+        // If 'proposal' is out of the range of the array,
+        // this will throw automatically and revert all
+        // changes.
+        proposals[proposal].voteCount += sender.weight;
     }
 
-    /** 
-    * @dev this function sets the state to Created.
-    * @notice this function indicates the start of the election.
-    */
-    function startVote() public inState(State.Created) onlyOwner {
-        state = State.Voting;
+    function endVoting () public {
+        require(isOpen);
+        isOpen = false;
     }
 
-    /**
-    * @dev this function casts vote, requires the voter to not have already voted,
-        requires that the candidate's status is set to registered and requires that 
-        the owner cannot vote. Specifies the address the voter voted for, and sets 
-        the flag to indicate that the voter has now voted. It increments the 
-        candidate's vote count and the total vote count.
-    * @notice this function casts vote.
-    * @param _canAddress candidate address.
+    /*@return winningProposal_ index of winning proposal in the proposals array
      */
-    function vote(address _canAddress) inState(State.Voting) public {
-        require(voters[msg.sender].registered, "Voter is not registered");
-        require(!voters[msg.sender].voted, "Voter has already voted");
-        require(candidates[_canAddress].registered, "Not a registered candidate");
-        require(msg.sender!=owner, "Owner cannot vote"); 
-
-        voters[msg.sender].vote = _canAddress;
-        voters[msg.sender].voted = true;
-        candidates[_canAddress].voteCount++;
-        totalVotes++;
-    }
-
-    /** 
-    * @dev this function sets the state to Voting.
-    * @notice this function indicates the start of the voting process.
-    */
-    function endVote() public inState(State.Voting) onlyOwner {
-        state = State.Ended;
-    }
-    
-    /** 
-    * @dev this function announces the winner's address, compares the vote count for all the candidates.
-    * @notice this function announces the winner.
-    */
-    function announceWinner() inState(State.Ended) onlyOwner public view returns (address) {
-        uint max = 0;
-        uint i;
-        address winnerAddress;
-        for(i=0; i<candidateAddresses.length; i++) {
-            if(candidates[candidateAddresses[i]].voteCount > max) {
-                max = candidates[candidateAddresses[i]].voteCount;
-                winnerAddress = candidateAddresses[i];
+    function winningProposal() public view
+            returns (uint winningProposal_)
+    {
+        uint winningVoteCount = 0;
+        for (uint p = 0; p < proposals.length; p++) {
+            if (proposals[p].voteCount > winningVoteCount) {
+                winningVoteCount = proposals[p].voteCount;
+                winningProposal_ = p;
             }
         }
-        return winnerAddress;
     }
-    
-    /** 
-    * @dev this function returns the length of the candidateAddress array.
-    * @notice this function returns the total number of candidates.
-    */
-    function getTotalCandidates() public view returns(uint) {
-        return candidateAddresses.length;
+
+    /* @return winnerName_ the name of the winner
+     */
+    function winnerName() public view
+            returns (string memory winnerName_)
+    {
+        winnerName_ = proposals[winningProposal()].name;
     }
-    
-    /** 
-    * @dev this function returns the balance of the contract.
-    * @notice this function returns the balance of the contract.
-    */
-    function balanceOf() public view returns(uint) {
-        return address(this).balance;
-    }
-    
-    /** 
-    * @dev this function transfers the funds from the contract to the owner.
-    * @notice this function withdraws the funds.
-    */
-    function withdrawRegistrationFunds() onlyOwner inState(State.Ended) payable public {
-        require(address(this).balance > 0, "No funds to transfer");
-        payable(owner).transfer(address(this).balance);
-    }
-    
-    /** 
-    * @dev this function returns the balance of the owner
-    * @notice this function returns the balance of the owner
-    */
-    function getOwnerBalance() public view returns(uint) {
-        return owner.balance;
-    }
-    
 }
